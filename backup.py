@@ -35,6 +35,7 @@ except ValueError:
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 client = discord.Client(intents=intents)
 
@@ -170,7 +171,7 @@ async def backup_messagable(
         return
 
     safe_name = sanitize_filename(getattr(messagable, 'name', 'unknown'))
-    channel_file = backup_dir / f'{messagable.id}-{safe_name}.jsonl'
+    channel_file = backup_dir / f'{messagable.id}-{safe_name}_messages.jsonl'
 
     logging.info('Backing up #%s (ID: %s)', messagable.name, messagable.id)
 
@@ -244,7 +245,65 @@ async def backup_messagable(
                 logging.warning('HTTP error fetching pins in #%s: %s', messagable.name, e)
         except Exception as e:
             logging.exception('Unexpected error fetching pins in #%s', messagable.name)
+            
+        # Snapshot of who can VIEW / READ / SEND in this channel (permission-based)
+        try:
+            viewer_overrides = []
+            # @everyone base
+            everyone = messagable.guild.default_role
+            everyone_perms = messagable.permissions_for(everyone)
+            viewer_overrides.append({
+                'type': 'role',
+                'id': everyone.id,
+                'name': '@everyone',
+                'view_channel': everyone_perms.view_channel,
+                'read_message_history': everyone_perms.read_message_history,
+                'send_messages': everyone_perms.send_messages,
+            })
 
+            # Role & user overrides
+            if hasattr(messagable, 'overwrites'):
+                for target, overwrite in messagable.overwrites.items():
+                    allow, deny = overwrite.pair()
+                    view_allow = allow.view_channel
+                    view_deny = deny.view_channel
+                    read_allow = allow.read_message_history
+                    read_deny = deny.read_message_history
+                    send_allow = allow.send_messages
+                    send_deny = deny.send_messages
+
+                    effective_view = view_allow if view_allow is not None else (not view_deny)
+                    effective_read = read_allow if read_allow is not None else (not read_deny)
+                    effective_send = send_allow if send_allow is not None else (not send_deny)
+
+                    if isinstance(target, discord.Role):
+                        viewer_overrides.append({
+                            'type': 'role',
+                            'id': target.id,
+                            'name': target.name,
+                            'view_channel_effective': effective_view,
+                            'read_history_effective': effective_read,
+                            'send_messages_effective': effective_send,
+                        })
+                    elif isinstance(target, discord.Member):
+                        viewer_overrides.append({
+                            'type': 'user',
+                            'id': target.id,
+                            'name': target.display_name,
+                            'view_channel_effective': effective_view,
+                            'read_history_effective': effective_read,
+                            'send_messages_effective': effective_send,
+                        })
+
+            if viewer_overrides:
+                viewers_file = backup_dir / f'{messagable.id}-{safe_name}_access.jsonl'
+                async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as f:
+                    for override in viewer_overrides:
+                        await f.write(json.dumps(override, ensure_ascii=False) + '\n')
+                logging.info('Saved channel access snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
+
+        except Exception as e:
+            logging.warning('Error snapshotting channel access in #%s: %s', messagable.name, e)
 
     except Exception as e:
         logging.exception('Error backing up #%s', messagable.name)
@@ -345,6 +404,89 @@ async def on_ready():
             logging.info(f'Backed up {len(events)} scheduled events to {events_dir}')
         except Exception as e:
             logging.exception('Error fetching scheduled events')
+    
+    # ── Backup guild roles ──
+    logging.info('Backing up guild roles...')
+    roles_dir = backup_dir / 'roles'
+    roles_dir.mkdir(exist_ok=True)
+
+    try:
+        roles_list = []
+        for role in guild.roles:
+            role_data = {
+                'id': role.id,
+                'name': role.name,
+                'color': role.color.value,
+                'hoist': role.hoist,
+                'position': role.position,
+                'permissions': role.permissions.value,  # raw bitfield
+                'mentionable': role.mentionable,
+                'managed': role.managed,
+                'is_default': role.is_default(),
+                'created_at': role.created_at.isoformat() if role.created_at else None,
+            }
+            roles_list.append(role_data)
+
+        roles_file = roles_dir / 'guild_roles.jsonl'
+        async with aiofiles.open(roles_file, 'w', encoding='utf-8') as f:
+            for role_data in roles_list:
+                await f.write(json.dumps(role_data, ensure_ascii=False) + '\n')
+        logging.info(f'Backed up {len(roles_list)} roles to {roles_file}')
+
+    except Exception as e:
+        logging.exception('Error backing up guild roles')
+
+
+    # ── Backup guild members (full list) ──
+    logging.info('Backing up guild members...')
+    members_dir = backup_dir / 'members'
+    members_dir.mkdir(exist_ok=True)
+
+    try:
+        # Force full member list load for large guilds
+        if guild.large or len(guild.members) < guild.member_count - 50:
+            logging.info('Guild is large or cache incomplete — chunking members...')
+            await guild.chunk()  # Triggers Discord to send all members via gateway
+            # Wait a bit for chunks to arrive (adjust as needed)
+            await asyncio.sleep(5)  # Give time; may need more for huge guilds
+
+        members_list = []
+        for member in guild.members:
+            member_data = {
+                'id': member.id,
+                'name': member.name,
+                'global_name': member.global_name,
+                'display_name': member.display_name,
+                'discriminator': member.discriminator if hasattr(member, 'discriminator') else None,
+                'joined_at': member.joined_at.isoformat() if member.joined_at else None,
+                'created_at': member.created_at.isoformat() if member.created_at else None,
+                'bot': member.bot,
+                'premium_since': member.premium_since.isoformat() if member.premium_since else None,
+                'roles': [role.id for role in member.roles],
+                'top_role_id': member.top_role.id if member.top_role else None,
+                'status': str(member.status),
+                'flags': member.public_flags.value if member.public_flags else None,
+                'communication_disabled_until': member.communication_disabled_until.isoformat() if hasattr(member, 'communication_disabled_until_isoformat') else None,
+                'avatar_url': member.avatar.url if member.avatar else None,
+            }
+            members_list.append(member_data)
+
+        if members_list:
+            members_file = members_dir / 'guild_members.jsonl'
+            async with aiofiles.open(members_file, 'w', encoding='utf-8') as f:
+                for member_data in members_list:
+                    await f.write(json.dumps(member_data, ensure_ascii=False) + '\n')
+            logging.info(f'Backed up {len(members_list)} members to {members_file}')
+        else:
+            logging.warning('No members loaded — ensure Members Intent is enabled in portal and code')
+
+    except discord.Forbidden:
+        logging.warning('Cannot fetch members (Members Intent or permissions missing)')
+    except discord.HTTPException as e:
+        logging.warning(f'HTTP error during member chunk/fetch: {e}')
+    except Exception as e:
+        logging.exception('Unexpected error backing up guild members')
+        
         
     logging.info('Full backup complete! Files saved to: %s', backup_dir)
     await client.close()
