@@ -241,8 +241,6 @@ async def backup_messagable(
         try:
             pinned_messages = await messagable.pins()
             if pinned_messages:
-                pinned_data = [serialize_message(msg) for msg in pinned_messages]
-
                 pins_file = backup_dir / f'{messagable.id}-{safe_name}_pinned.jsonl'
                 async with aiofiles.open(pins_file, 'w', encoding='utf-8') as pinned_file_handle:
                     for msg in pinned_messages:
@@ -476,7 +474,7 @@ async def on_ready():
                 'top_role_id': member.top_role.id if member.top_role else None,
                 'status': str(member.status),
                 'flags': member.public_flags.value if member.public_flags else None,
-                'communication_disabled_until': member.communication_disabled_until.isoformat() if hasattr(member, 'communication_disabled_until') else None,
+                'communication_disabled_until': member.communication_disabled_until.isoformat() if getattr(member, 'communication_disabled_until', None) is not None else None,
                 'avatar_url': member.avatar.url if member.avatar else None,
             }
             members_list.append(member_data)
