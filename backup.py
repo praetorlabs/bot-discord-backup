@@ -53,16 +53,16 @@ async def download_file(session: aiohttp.ClientSession, url: str, path: Path) ->
 
 
 def serialize_permissions(value: int) -> Dict[str, Any]:
-    """Return dict with raw bitfield + readable granted permissions."""
+    """Return dict with raw bitfield + readable named permissions."""
     if value == 0:
-        return {'raw_value': 0, 'granted': {}}
+        return {'raw_flag_value': 0, 'named_permissions': {}}
     
     perms = discord.Permissions(value)
-    granted = {name: True for name, value in perms if value is True}
+    named_permissions = {name: True for name, value in perms if value is True}
     
     return {
-        'raw_value': value,
-        'granted': granted
+        'raw_flag_value': value,
+        'named_permissions': named_permissions
     }
 
 
@@ -195,7 +195,7 @@ async def backup_messagable(
     media_id = 0
 
     try:
-        async with aiofiles.open(channel_file, 'w', encoding='utf-8') as f:
+        async with aiofiles.open(channel_file, 'w', encoding='utf-8') as messages_file_handle:
             async for message in messagable.history(limit=None, oldest_first=True):
                 msg_data = serialize_message(message)
 
@@ -230,7 +230,7 @@ async def backup_messagable(
                     })
                     media_id += 1
 
-                await f.write(json.dumps(msg_data, ensure_ascii=False) + '\n')
+                await messages_file_handle.write(json.dumps(msg_data, ensure_ascii=False) + '\n')
                 count += 1
 
                 if count % 1000 == 0:
@@ -244,10 +244,10 @@ async def backup_messagable(
                 pinned_data = [serialize_message(msg) for msg in pinned_messages]
 
                 pins_file = backup_dir / f'{messagable.id}-{safe_name}_pinned.jsonl'
-                async with aiofiles.open(pins_file, 'w', encoding='utf-8') as f:
+                async with aiofiles.open(pins_file, 'w', encoding='utf-8') as pinned_file_handle:
                     for msg in pinned_messages:
                         msg_data = serialize_message(msg)
-                        await f.write(json.dumps(msg_data, ensure_ascii=False) + '\n')
+                        await pinned_file_handle.write(json.dumps(msg_data, ensure_ascii=False) + '\n')
 
                 logging.info('Saved %d currently pinned messages for #%s', len(pinned_messages), messagable.name)
             else:
@@ -283,12 +283,15 @@ async def backup_messagable(
 
                 # Role & user overrides
                 for target, overwrite in messagable.overwrites.items():
-                    allow_perms = serialize_permissions(overwrite.allow.value) if hasattr(overwrite, 'allow') else None
-                    deny_perms = serialize_permissions(overwrite.deny.value) if hasattr(overwrite, 'deny') else None
+                    allow, deny = overwrite.pair()  # Returns (Permissions, Permissions)
 
-                    effective_view = overwrite.allow.view_channel if overwrite.allow.view_channel is not None else not overwrite.deny.view_channel
-                    effective_read = overwrite.allow.read_message_history if overwrite.allow.read_message_history is not None else not overwrite.deny.read_message_history
-                    effective_send = overwrite.allow.send_messages if overwrite.allow.send_messages is not None else not overwrite.deny.send_messages
+                    allow_perms = serialize_permissions(allow.value)
+                    deny_perms = serialize_permissions(deny.value)
+
+                    # Effective permissions (allow wins over deny if set)
+                    effective_view = allow.view_channel if allow.view_channel is not None else not deny.view_channel
+                    effective_read = allow.read_message_history if allow.read_message_history is not None else not deny.read_message_history
+                    effective_send = allow.send_messages if allow.send_messages is not None else not deny.send_messages
 
                     entry = {
                         'type': 'role' if isinstance(target, discord.Role) else 'user',
@@ -304,9 +307,9 @@ async def backup_messagable(
 
                 if viewer_overrides:
                     viewers_file = backup_dir / f'{messagable.id}-{safe_name}_access.jsonl'
-                    async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as f:
+                    async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as access_file_handle:
                         for override in viewer_overrides:
-                            await f.write(json.dumps(override, ensure_ascii=False) + '\n')
+                            await access_file_handle.write(json.dumps(override, ensure_ascii=False) + '\n')
                     logging.info('Saved channel access snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
 
         except Exception as e:
@@ -473,7 +476,7 @@ async def on_ready():
                 'top_role_id': member.top_role.id if member.top_role else None,
                 'status': str(member.status),
                 'flags': member.public_flags.value if member.public_flags else None,
-                'communication_disabled_until': member.communication_disabled_until.isoformat() if hasattr(member, 'communication_disabled_until_isoformat') else None,
+                'communication_disabled_until': member.communication_disabled_until.isoformat() if hasattr(member, 'communication_disabled_until') else None,
                 'avatar_url': member.avatar.url if member.avatar else None,
             }
             members_list.append(member_data)
