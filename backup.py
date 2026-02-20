@@ -52,9 +52,24 @@ async def download_file(session: aiohttp.ClientSession, url: str, path: Path) ->
                     await f.write(chunk)
 
 
+def serialize_permissions(value: int) -> Dict[str, Any]:
+    """Return dict with raw bitfield + readable granted permissions."""
+    if value == 0:
+        return {'raw_value': 0, 'granted': {}}
+    
+    perms = discord.Permissions(value)
+    granted = {name: True for name, value in perms if value is True}
+    
+    return {
+        'raw_value': value,
+        'granted': granted
+    }
+
+
 def sanitize_filename(name: str) -> str:
     """Sanitize channel/thread name for filesystem safety."""
     return re.sub(r'[<>:"/\\|?*]', '_', name)
+
 
 def serialize_interaction_metadata(
     metadata: Optional[discord.MessageInteractionMetadata]
@@ -116,6 +131,7 @@ def serialize_interaction_metadata(
     # result = {k: v for k, v in result.items() if v is not None}
 
     return result
+
 
 def serialize_message(message: discord.Message) -> dict[str, Any]:
     """Serialize a discord.Message into a rich dictionary."""
@@ -248,59 +264,50 @@ async def backup_messagable(
             
         # Snapshot of who can VIEW / READ / SEND in this channel (permission-based)
         try:
-            viewer_overrides = []
-            # @everyone base
-            everyone = messagable.guild.default_role
-            everyone_perms = messagable.permissions_for(everyone)
-            viewer_overrides.append({
-                'type': 'role',
-                'id': everyone.id,
-                'name': '@everyone',
-                'view_channel': everyone_perms.view_channel,
-                'read_message_history': everyone_perms.read_message_history,
-                'send_messages': everyone_perms.send_messages,
-            })
+            if not hasattr(messagable, 'overwrites'):
+                logging.debug('No permission overrides available for %s (likely thread)', messagable.name)
+            else:
+                viewer_overrides = []
+                # @everyone base
+                everyone = messagable.guild.default_role
+                everyone_perms = messagable.permissions_for(everyone)
+                viewer_overrides.append({
+                    'type': 'role',
+                    'id': everyone.id,
+                    'name': '@everyone',
+                    'allow': serialize_permissions(everyone_perms.value),
+                    'effective_view_channel': everyone_perms.view_channel,
+                    'effective_read_history': everyone_perms.read_message_history,
+                    'effective_send_messages': everyone_perms.send_messages,
+                })
 
-            # Role & user overrides
-            if hasattr(messagable, 'overwrites'):
+                # Role & user overrides
                 for target, overwrite in messagable.overwrites.items():
-                    allow, deny = overwrite.pair()
-                    view_allow = allow.view_channel
-                    view_deny = deny.view_channel
-                    read_allow = allow.read_message_history
-                    read_deny = deny.read_message_history
-                    send_allow = allow.send_messages
-                    send_deny = deny.send_messages
+                    allow_perms = serialize_permissions(overwrite.allow.value) if hasattr(overwrite, 'allow') else None
+                    deny_perms = serialize_permissions(overwrite.deny.value) if hasattr(overwrite, 'deny') else None
 
-                    effective_view = view_allow if view_allow is not None else (not view_deny)
-                    effective_read = read_allow if read_allow is not None else (not read_deny)
-                    effective_send = send_allow if send_allow is not None else (not send_deny)
+                    effective_view = overwrite.allow.view_channel if overwrite.allow.view_channel is not None else not overwrite.deny.view_channel
+                    effective_read = overwrite.allow.read_message_history if overwrite.allow.read_message_history is not None else not overwrite.deny.read_message_history
+                    effective_send = overwrite.allow.send_messages if overwrite.allow.send_messages is not None else not overwrite.deny.send_messages
 
-                    if isinstance(target, discord.Role):
-                        viewer_overrides.append({
-                            'type': 'role',
-                            'id': target.id,
-                            'name': target.name,
-                            'view_channel_effective': effective_view,
-                            'read_history_effective': effective_read,
-                            'send_messages_effective': effective_send,
-                        })
-                    elif isinstance(target, discord.Member):
-                        viewer_overrides.append({
-                            'type': 'user',
-                            'id': target.id,
-                            'name': target.display_name,
-                            'view_channel_effective': effective_view,
-                            'read_history_effective': effective_read,
-                            'send_messages_effective': effective_send,
-                        })
+                    entry = {
+                        'type': 'role' if isinstance(target, discord.Role) else 'user',
+                        'id': target.id,
+                        'name': target.name if isinstance(target, discord.Role) else target.display_name,
+                        'allow': allow_perms,
+                        'deny': deny_perms,
+                        'effective_view_channel': effective_view,
+                        'effective_read_history': effective_read,
+                        'effective_send_messages': effective_send,
+                    }
+                    viewer_overrides.append(entry)
 
-            if viewer_overrides:
-                viewers_file = backup_dir / f'{messagable.id}-{safe_name}_access.jsonl'
-                async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as f:
-                    for override in viewer_overrides:
-                        await f.write(json.dumps(override, ensure_ascii=False) + '\n')
-                logging.info('Saved channel access snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
+                if viewer_overrides:
+                    viewers_file = backup_dir / f'{messagable.id}-{safe_name}_access.jsonl'
+                    async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as f:
+                        for override in viewer_overrides:
+                            await f.write(json.dumps(override, ensure_ascii=False) + '\n')
+                    logging.info('Saved channel access snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
 
         except Exception as e:
             logging.warning('Error snapshotting channel access in #%s: %s', messagable.name, e)
@@ -419,7 +426,7 @@ async def on_ready():
                 'color': role.color.value,
                 'hoist': role.hoist,
                 'position': role.position,
-                'permissions': role.permissions.value,  # raw bitfield
+                'permissions': serialize_permissions(role.permissions.value),  # ← now uses helper with raw + granted
                 'mentionable': role.mentionable,
                 'managed': role.managed,
                 'is_default': role.is_default(),
