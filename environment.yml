@@ -1,0 +1,24 @@
+name: discord-backup
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.12.3 # Matches the stable Python version used in the interpreter/tooling
+  - pip # Ensure pip is available for any extras if needed
+
+  # Optional but recommended for better dev experience & debugging
+  - pip:
+      - discord.py==2.6.4 # Latest stable release as of Oct 2025 → still current in Feb 2026
+      - aiohttp==3.13.3 # Latest stable with security fixes (Jan 2026)
+      - aiofiles==25.1.0 # Latest stable (Oct 2025)
+      - dotenv==1.2.1
+#      - black # Optional: code formatter
+#      - ruff # Optional: fast linter (replaces flake8 + isort + pydocstyle)
+#      - mypy # Optional: static type checker
+
+# Optional: If you want to lock everything more strictly (including transitive deps)
+# You can generate this after creating the env with:
+# conda env export --from-history > environment.yml   (minimal)
+# or conda env export > environment.yml               (full lockfile)
