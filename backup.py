@@ -317,6 +317,44 @@ async def backup_messagable(
         logging.exception('Error backing up #%s', messagable.name)
 
 
+async def backup_voice_channel(
+    channel: discord.VoiceChannel,
+    backup_dir: Path,
+    attachments_dir: Path,
+    session: aiohttp.ClientSession,
+) -> None:
+    """Backup members, permissions, and associated text chat for a voice channel."""
+    safe_name = sanitize_filename(channel.name)
+    logging.info('Backing up voice channel #%s (ID: %s)', channel.name, channel.id)
+
+    # Backup current members in voice
+    voice_members = channel.members
+    if voice_members:
+        members_data = [{
+            'id': m.id,
+            'name': m.name,
+            'display_name': m.display_name,
+            'deaf': m.voice.deaf if hasattr(m.voice, 'deaf') else None,
+            'mute': m.voice.mute if hasattr(m.voice, 'mute') else None,
+            'self_deaf': m.voice.self_deaf if hasattr(m.voice, 'self_deaf') else None,
+            'self_mute': m.voice.self_mute if hasattr(m.voice, 'self_mute') else None,
+            'voice_state': str(m.voice) if hasattr(m, 'voice') else None,
+        } for m in voice_members]
+        members_file = backup_dir / f'{channel.id}-{safe_name}_voice_members.jsonl'
+        async with aiofiles.open(members_file, 'w', encoding='utf-8') as f:
+            for data in members_data:
+                await f.write(json.dumps(data, ensure_ascii=False) + '\n')
+        logging.info('Saved %d voice members for #%s', len(voice_members), channel.name)
+    else:
+        logging.debug('No members in voice channel #%s', channel.name)
+
+    # Voice channels have permissions like text
+    # Reuse the access snapshot from backup_messagable (add call below if needed)
+
+    # Associated text chat (voice channels have text component)
+    # Use backup_messagable on channel (it works for VoiceChannel text)
+    await backup_messagable(channel, backup_dir, attachments_dir, session)
+
 @client.event
 async def on_ready():
     logging.info('Logged in as %s — starting backup', client.user)
@@ -335,7 +373,12 @@ async def on_ready():
     async with aiohttp.ClientSession() as session:
         # Regular text channels (including announcement channels)
         for channel in guild.text_channels:
-            await backup_messagable(channel, backup_dir, attachments_dir, session)
+            await backup_messagable(channel, backup_dir, attachments_dir, session)       
+            
+        # Voice channels
+        logging.info('Backing up voice channels...')
+        for vc in guild.voice_channels:
+            await backup_voice_channel(vc, backup_dir, attachments_dir, session)
 
         # Active threads (covers threads from both text channels and forums)
         logging.info('Backing up active threads...')
