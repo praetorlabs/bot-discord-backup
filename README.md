@@ -2,7 +2,7 @@
 
 A Python script for server administrators to create a best-effort offline backup of every channel, message, attachment, sticker, thread, and scheduled event from a Discord server (guild) using a bot account.
 
-This tool is designed for personal archiving, server migration preparation, or recovery from potential data loss/raids/unanticipated policy changes on behalf of discord. It produces JSONL files + downloaded media, with every effort made to preserve metadata provided by discord.py
+This tool is designed for personal archiving, server migration preparation, or recovery from potential data loss, raids, or unanticipated policy changes by Discord. It produces JSONL files + downloaded media, with every effort made to preserve metadata provided by discord.py.
 
 ## Features
 
@@ -15,27 +15,75 @@ This tool is designed for personal archiving, server migration preparation, or r
 - Environment variable configuration (no hard-coded tokens)
 - Handles rate limits reasonably (with room for improvement)
 
+## Requirements
+
+- Python 3.10+ (tested with 3.12)
+- discord.py 2.6.4 (or compatible)
+- Other dependencies: aiohttp, aiofiles, python-dotenv (listed in `environment.yml`)
+
 ## Installation
 
-1. Clone or download this repository
+1. Clone or download this repository:
+
+```
+git clone https://github.com/praetorlabs/bot-discord-backup.git
+cd bot-discord-backup
+```
 
 2. Create and activate a Conda environment (recommended):
-   ```
-   conda env create -f environment.yml
-   conda activate discord-backup
-   ```
-
-3. Create a .env file in the project root:
 
 ```
-# you may copy/paste/rename the `.env.template` file to `.env` filling in the appropriate values
+conda env create -f environment.yml
+conda activate discord-backup
+```
+
+Alternatively, install dependencies manually:
+
+```
+pip install -r requirements.txt
+```
+
+3. Create a `.env` file in the project root (copy from `.env.template` and fill in):
+
+```
 DISCORD_BOT_TOKEN=your_bot_token_here
-DISCORD_GUILD_ID=123456789012345678   # Your server ID (right-click server → Copy Server ID)
+DISCORD_GUILD_ID=123456789012345678  # Your server ID (right-click server → Copy Server ID)
 ```
 
-## Running
+**Note**: Ensure your bot has the necessary intents enabled in the Discord Developer Portal (Members and Message Content) and is invited to the server with read permissions for channels/history.
 
-- run `python backup.py`
+## Usage
+
+Run the script:
+
+```
+python backup.py
+```
+
+- Backups are saved to a timestamped folder in `./backup/` (e.g., `ServerName_YYYYMMDD_HHMMSS`).
+- Logs progress and any errors to console.
+- To skip media downloads (for testing), uncomment the skip line in `download_file()`.
+
+## Output Structure
+
+- `attachments/`: Downloaded files (attachments + stickers)
+- `channels/text/`: Text channel messages (.jsonl), pinned (.jsonl), permissions (.jsonl), members_effective (.jsonl)
+- `channels/voice/`: Voice channel members (.jsonl), messages (.jsonl if text chat), etc.
+- `channels/threads/`: Thread messages (.jsonl), etc.
+- `conf/`: Guild metadata (.json), members (.jsonl), roles (.jsonl), channels_metadata (.jsonl)
+- `scheduled_events/`: Event files (.json)
+
+## Limitations
+
+- Does not back up voice audio (impossible via bot API).
+- Polls use a private discord.py method (TODO: custom serializer).
+- Large guilds may hit rate limits—run during off-peak or add retries.
+- Bot must have View Channel/Read History permissions everywhere.
+- No restore functionality (export-only).
+
+## Contributing
+
+Pull requests welcome! For major changes, open an issue first. Focus on robustness, async efficiency, and metadata completeness.
 
 ## License
 
