@@ -1,4 +1,4 @@
-# discord-backup
+# bot-discord-backup
 
 A Python script for server administrators to create a best-effort offline backup of every channel, message, attachment, sticker, thread, and scheduled event from a Discord server (guild) using a bot account.
 
