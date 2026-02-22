@@ -20,8 +20,10 @@ This tool is designed for personal archiving, server migration preparation, or r
 1. Clone or download this repository
 
 2. Create and activate a Conda environment (recommended):
+   ```
    conda env create -f environment.yml
    conda activate discord-backup
+   ```
 
 3. Create a .env file in the project root:
 
