@@ -55,6 +55,49 @@ async def download_file(session: aiohttp.ClientSession, url: str, path: Path) ->
                     await f.write(chunk)
 
 
+def serialize_channel(channel: discord.abc.GuildChannel) -> Dict[str, Any]:
+    data = {
+        'id': channel.id,
+        'name': channel.name,
+        'type': str(channel.type),
+        'position': channel.position,
+        'category_id': channel.category_id,
+        'created_at': channel.created_at.isoformat(),
+        'jump_url': channel.jump_url,
+        'mention': channel.mention,
+    }
+    if isinstance(channel, discord.TextChannel) or isinstance(channel, discord.ForumChannel):
+        data.update({
+            'topic': channel.topic,
+            'nsfw': channel.nsfw,
+            'slowmode_delay': channel.slowmode_delay,
+            'default_auto_archive_duration': channel.default_auto_archive_duration,
+            'default_thread_slowmode_delay': channel.default_thread_slowmode_delay,
+            'flags': channel.flags.value if hasattr(channel, 'flags') else None, # <-- grok, this should check if flags exists
+        })
+        if channel.type in (discord.ChannelType.forum, discord.ChannelType.media):
+            data.update({
+                'default_reaction_emoji': str(channel.default_reaction_emoji) if channel.default_reaction_emoji else None,
+                'default_sort_order': str(channel.default_sort_order) if channel.default_sort_order else None,
+                'default_layout': str(channel.default_layout),
+                'available_tags': [
+                    {'id': t.id, 'name': t.name, 'moderated': t.moderated, 'emoji': str(t.emoji) if t.emoji else None}
+                    for t in channel.available_tags
+                ],
+            })
+    elif isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+        data.update({
+            'bitrate': channel.bitrate,
+            'user_limit': channel.user_limit,
+            'rtc_region': channel.rtc_region,
+            'video_quality_mode': str(channel.video_quality_mode),
+        })
+        if isinstance(channel, discord.StageChannel):
+            data['topic'] = channel.topic
+    elif isinstance(channel, discord.CategoryChannel):
+        data['nsfw'] = channel.nsfw
+    return data
+
 def serialize_permissions(value: int) -> Dict[str, Any]:
     """Return dict with raw bitfield + readable named permissions."""
     if value == 0:
@@ -441,11 +484,18 @@ async def backup_roles(guild, backup_dir):
     except Exception as e:
         logging.exception('Error backing up guild roles')
 
-async def backup_channel_metadata(): # <-- grok give this method the appropriate arguments
-    '''
-    grok can you make this work
-    '''
-    pass
+
+async def backup_channel_metadata(guild: discord.Guild, backup_dir: Path) -> None:
+    logging.info('Backing up channel metadata...')
+    try:
+        channels_list = [serialize_channel(channel) for channel in guild.channels]
+        metadata_file = backup_dir / 'channels_metadata.jsonl'
+        async with aiofiles.open(metadata_file, 'w', encoding='utf-8') as f:
+            for channel_data in channels_list:
+                await f.write(json.dumps(channel_data, ensure_ascii=False) + '\n')
+        logging.info(f'Backed up metadata for {len(channels_list)} channels to {metadata_file}')
+    except Exception as e:
+        logging.exception('Error backing up channel metadata')
 
 async def backup_text_channels(guild, backup_dir, attachments_dir, session):
     logging.info('Backing up text channels...')
@@ -612,7 +662,7 @@ async def on_ready():
     await backup_roles(guild, subdir('conf'))
     
     # Backup channel metadata 
-    await backup_channel_metadata() # <-- grok pass appropriate arguments to this method
+    await backup_channel_metadata(guild, subdir('conf'))
     
     async with aiohttp.ClientSession() as session:
         # Regular text channels (including announcement channels)
