@@ -216,13 +216,157 @@ def serialize_message(message: discord.Message) -> dict[str, Any]:
         'interaction_metadata': serialize_interaction_metadata(message.interaction_metadata),
         'thread_started': message.thread.id if message.thread else None,
     }
+async def backup_channel_members_effective(
+    messagable: discord.abc.Messageable,
+    backup_dir: Path,
+    safe_name: str,
+    guild: discord.Guild,
+) -> None:
+    """Backup effective permissions for members 'in' the channel/thread/voice."""
+    try:
+        members_effective = []
+        if isinstance(messagable, discord.Thread):
+            # Explicit joined members for threads
+            joined_members = await messagable.fetch_members()
+            for tm in joined_members:
+                member = messagable.guild.get_member(tm.id)
+                if member is None:
+                    logging.debug('Skipping uncached member ID %s in thread %s', tm.id, messagable.name)
+                    continue
+                effective_perms = messagable.permissions_for(member)
+                entry = {
+                    'id': member.id,
+                    'name': member.name,
+                    'global_name': member.global_name,
+                    'display_name': member.display_name,
+                    'discriminator': member.discriminator,
+                    'can_view_text': effective_perms.view_channel,
+                    'can_read_history': effective_perms.read_message_history,
+                    'effective_permissions': serialize_permissions(effective_perms.value),
+                }
+                members_effective.append(entry)
+        elif isinstance(messagable, (discord.TextChannel, discord.ForumChannel)):
+            # All guild members with view access for text/forum
+            for member in guild.members:
+                effective_perms = messagable.permissions_for(member)
+                if effective_perms.view_channel:
+                    entry = {
+                        'id': member.id,
+                        'name': member.name,
+                        'global_name': member.global_name,
+                        'display_name': member.display_name,
+                        'discriminator': member.discriminator,
+                        'can_view_text': effective_perms.view_channel,
+                        'can_read_history': effective_perms.read_message_history,
+                        'effective_permissions': serialize_permissions(effective_perms.value),
+                    }
+                    members_effective.append(entry)
+        elif isinstance(messagable, discord.VoiceChannel):
+            # All guild members allowed to speak (and can read text)
+            for member in guild.members:
+                effective_perms = messagable.permissions_for(member)
+                if effective_perms.speak:
+                    entry = {
+                        'id': member.id,
+                        'name': member.name,
+                        'global_name': member.global_name,
+                        'display_name': member.display_name,
+                        'discriminator': member.discriminator,
+                        'can_view_text': effective_perms.view_channel,
+                        'can_read_history': effective_perms.read_message_history,
+                        'effective_permissions': serialize_permissions(effective_perms.value),
+                    }
+                    members_effective.append(entry)
+        else:
+            logging.debug('Skipping effective members for unsupported type: %s', type(messagable).__name__)
+            return
 
+        if members_effective:
+            effective_file = backup_dir / f'{messagable.id}-{safe_name}_members_effective.jsonl'
+            async with aiofiles.open(effective_file, 'w', encoding='utf-8') as f:
+                for entry in members_effective:
+                    await f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            logging.info('Saved effective members/permissions (%d entries) for #%s', len(members_effective), messagable.name)
 
-async def backup_channel_permissions(): # <-- grok give this method the appropriate arguments
-    '''
-    grok can you make this work
-    '''
-    pass
+    except Exception as e:
+        logging.warning('Error backing up effective members in #%s: %s', messagable.name, e)
+
+async def backup_channel_permissions(
+    messagable: discord.abc.Messageable,
+    backup_dir: Path,
+    safe_name: str,
+) -> None:
+    try:
+        if not hasattr(messagable, 'overwrites'):
+            logging.debug('No permission overrides available for %s (likely thread)', messagable.name)
+        else:
+            viewer_overrides = []
+
+            # Always include @everyone with raw (guild base or explicit overwrite) + full effective
+            everyone = messagable.guild.default_role
+            if everyone in messagable.overwrites:
+                overwrite = messagable.overwrites[everyone]
+                allow, deny = overwrite.pair()
+                allow_perms = serialize_permissions(allow.value)
+                deny_perms = serialize_permissions(deny.value)
+                effective_perms = messagable.permissions_for(everyone)
+                entry = {
+                    'type': 'role',
+                    'id': everyone.id,
+                    'name': '@everyone',
+                    'allow': allow_perms,
+                    'deny': deny_perms,
+                    'full_effective': serialize_permissions(effective_perms.value),
+                    'effective_view_channel': effective_perms.view_channel,
+                    'effective_read_history': effective_perms.read_message_history,
+                    'effective_send_messages': effective_perms.send_messages,
+                }
+            else:
+                base_perms = messagable.guild.default_role.permissions  # Guild-wide base
+                base_serial = serialize_permissions(base_perms.value)
+                entry = {
+                    'type': 'role',
+                    'id': everyone.id,
+                    'name': '@everyone',
+                    'allow': base_serial,
+                    'deny': {'raw_flag_value': 0, 'named_permissions': {}},
+                    'full_effective': base_serial,  # Same as no overwrite
+                    'effective_view_channel': base_perms.view_channel,
+                    'effective_read_history': base_perms.read_message_history,
+                    'effective_send_messages': base_perms.send_messages,
+                }
+            viewer_overrides.append(entry)
+
+            # Add other role/user overwrites (skip @everyone)
+            for target, overwrite in messagable.overwrites.items():
+                if target == everyone:
+                    continue
+                allow, deny = overwrite.pair()
+                allow_perms = serialize_permissions(allow.value)
+                deny_perms = serialize_permissions(deny.value)
+                effective_perms = messagable.permissions_for(target)
+                entry = {
+                    'type': 'role' if isinstance(target, discord.Role) else 'user',
+                    'id': target.id,
+                    'name': target.name if isinstance(target, discord.Role) else target.display_name,
+                    'allow': allow_perms,
+                    'deny': deny_perms,
+                    'full_effective': serialize_permissions(effective_perms.value),
+                    'effective_view_channel': effective_perms.view_channel,
+                    'effective_read_history': effective_perms.read_message_history,
+                    'effective_send_messages': effective_perms.send_messages,
+                }
+                viewer_overrides.append(entry)
+
+            if viewer_overrides:
+                permissions_file = backup_dir / f'{messagable.id}-{safe_name}_permissions.jsonl'
+                async with aiofiles.open(permissions_file, 'w', encoding='utf-8') as access_file_handle:
+                    for override in viewer_overrides:
+                        await access_file_handle.write(json.dumps(override, ensure_ascii=False) + '\n')
+                logging.info('Saved channel permissions snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
+
+    except Exception as e:
+        logging.warning('Error snapshotting channel permissions in #%s: %s', messagable.name, e)
 
 async def backup_messagable(
     messagable: discord.abc.Messageable,
@@ -240,14 +384,10 @@ async def backup_messagable(
     
     safe_name = sanitize_filename(getattr(messagable, 'name', 'unknown'))
     channel_file = backup_dir / f'{messagable.id}-{safe_name}_messages.jsonl'
-    permissions_file = backup_dir / f'{messagable.id}-{safe_name}_permissions.jsonl'
 
     logging.info('Backing up #%s (ID: %s)', messagable.name, messagable.id)
     
     
-    # Backup members and permissions for users belonging to this channel
-    await backup_channel_permissions() # <-- grok pass appropriate arguments to this method
-
     # Backup messages
     count = 0
     media_id = 0
@@ -317,59 +457,12 @@ async def backup_messagable(
                 logging.warning('HTTP error fetching pins in #%s: %s', messagable.name, e)
         except Exception as e:
             logging.exception('Unexpected error fetching pins in #%s', messagable.name)
-            
-        # Snapshot of who can VIEW / READ / SEND in this channel (permission-based)
-        try:
-            if not hasattr(messagable, 'overwrites'):
-                logging.debug('No permission overrides available for %s (likely thread)', messagable.name)
-            else:
-                viewer_overrides = []
-                # @everyone base
-                everyone = messagable.guild.default_role
-                everyone_perms = messagable.permissions_for(everyone)
-                viewer_overrides.append({
-                    'type': 'role',
-                    'id': everyone.id,
-                    'name': '@everyone',
-                    'allow': serialize_permissions(everyone_perms.value),
-                    'effective_view_channel': everyone_perms.view_channel,
-                    'effective_read_history': everyone_perms.read_message_history,
-                    'effective_send_messages': everyone_perms.send_messages,
-                })
-
-                # Role & user overrides
-                for target, overwrite in messagable.overwrites.items():
-                    allow, deny = overwrite.pair()  # Returns (Permissions, Permissions)
-
-                    allow_perms = serialize_permissions(allow.value)
-                    deny_perms = serialize_permissions(deny.value)
-
-                    # Effective permissions (allow wins over deny if set)
-                    effective_view = allow.view_channel if allow.view_channel is not None else not deny.view_channel
-                    effective_read = allow.read_message_history if allow.read_message_history is not None else not deny.read_message_history
-                    effective_send = allow.send_messages if allow.send_messages is not None else not deny.send_messages
-
-                    entry = {
-                        'type': 'role' if isinstance(target, discord.Role) else 'user',
-                        'id': target.id,
-                        'name': target.name if isinstance(target, discord.Role) else target.display_name,
-                        'allow': allow_perms,
-                        'deny': deny_perms,
-                        'effective_view_channel': effective_view,
-                        'effective_read_history': effective_read,
-                        'effective_send_messages': effective_send,
-                    }
-                    viewer_overrides.append(entry)
-
-                if viewer_overrides:
-                    viewers_file = backup_dir / f'{messagable.id}-{safe_name}_access.jsonl'
-                    async with aiofiles.open(viewers_file, 'w', encoding='utf-8') as access_file_handle:
-                        for override in viewer_overrides:
-                            await access_file_handle.write(json.dumps(override, ensure_ascii=False) + '\n')
-                    logging.info('Saved channel access snapshot (%d entries) for #%s', len(viewer_overrides), messagable.name)
-
-        except Exception as e:
-            logging.warning('Error snapshotting channel access in #%s: %s', messagable.name, e)
+        
+        # Backup effective channel member permissions
+        await backup_channel_members_effective(messagable, backup_dir, safe_name, messagable.guild)    
+    
+        # Backup permissions for this channel
+        await backup_channel_permissions(messagable, backup_dir, safe_name)
 
     except Exception as e:
         logging.exception('Error backing up #%s', messagable.name)
@@ -535,8 +628,9 @@ async def backup_voice_channel(
         logging.debug('No members in voice channel #%s', channel.name)
 
     # Voice channels have permissions like text
-    # Reuse the access snapshot from backup_messagable (add call below if needed)
-
+    # Reuse the access snapshot from backup_messagable
+    await backup_channel_members_effective(channel, backup_dir, safe_name, channel.guild)
+    
     # Associated text chat (voice channels have text component)
     # Use backup_messagable on channel (it works for VoiceChannel text)
     await backup_messagable(channel, backup_dir, attachments_dir, session)
