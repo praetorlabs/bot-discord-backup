@@ -21,6 +21,8 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 
+IS_DEBUG = os.getenv('IS_DEBUG', False)
+
 # Load configuration from environment variables
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
@@ -42,8 +44,9 @@ client = discord.Client(intents=intents)
 
 async def download_file(session: aiohttp.ClientSession, url: str, path: Path) -> None:
     """Download a file asynchronously with a shared session for efficiency."""
-    # logging.warning("skipped downloading file, stop skipping before running actual backup")
-    # return
+    if IS_DEBUG:
+        logging.warning("skipped downloading file, stop skipping before running actual backup")
+        return
     async with session.get(url) as resp:
         if resp.status == 200:
             path.parent.mkdir(parents=True, exist_ok=True)
