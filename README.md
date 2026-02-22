@@ -34,13 +34,7 @@ cd bot-discord-backup
 
 ```
 conda env create -f environment.yml
-conda activate discord-backup
-```
-
-Alternatively, install dependencies manually:
-
-```
-pip install -r requirements.txt
+conda activate bot-discord-backup
 ```
 
 3. Create a `.env` file in the project root (copy from `.env.template` and fill in):
@@ -62,7 +56,7 @@ python backup.py
 
 - Backups are saved to a timestamped folder in `./backup/` (e.g., `ServerName_YYYYMMDD_HHMMSS`).
 - Logs progress and any errors to console.
-- To skip media downloads (for testing), uncomment the skip line in `download_file()`.
+- To skip media downloads (for testing), set `IS_DEBUG=1` in `.env`
 
 ## Output Structure
 
