@@ -1,4 +1,4 @@
-name: discord-backup
+name: bot-discord-backup
 
 channels:
   - conda-forge
