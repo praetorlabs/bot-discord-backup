@@ -396,6 +396,14 @@ async def backup_messagable(
         async with aiofiles.open(channel_file, 'w', encoding='utf-8') as messages_file_handle:
             async for message in messagable.history(limit=None, oldest_first=True):
                 msg_data = serialize_message(message)
+                msg_data['reactions'] = []
+                for r in message.reactions:
+                    users = [user async for user in r.users()]
+                    msg_data['reactions'].append({
+                        'emoji': str(r.emoji),
+                        'count': r.count,
+                        'users': [u.id for u in users],
+                    })
 
                 # Attachments
                 for attachment in message.attachments:
@@ -500,7 +508,7 @@ async def backup_guild_metadata(guild: discord.Guild, backup_dir: Path) -> None:
     except Exception as e:
         logging.exception('Error backing up guild metadata')
 
-async def backup_guild_members(guild, backup_dir):
+async def backup_guild_members(session, guild, backup_dir):
     logging.info('Backing up guild members...')
 
     try:
@@ -531,6 +539,8 @@ async def backup_guild_members(guild, backup_dir):
                 'avatar_url': member.avatar.url if member.avatar else None,
             }
             members_list.append(member_data)
+            if member.avatar is not None and member.avatar.url is not None:
+                await download_file(session, member.avatar.url, backup_dir/f'avatars/{member.id}.png')
 
         if members_list:
             members_file = backup_dir / 'guild_members.jsonl'
@@ -746,19 +756,19 @@ async def on_ready():
     
     attachments_dir = subdir('attachments')
     
-    # Backup guild metadata
-    await backup_guild_metadata(guild, subdir('conf'))
-    
-    # Backup guild members (full list)
-    await backup_guild_members(guild, subdir('conf'))
-        
-    # Backup guild roles 
-    await backup_roles(guild, subdir('conf'))
-    
-    # Backup channel metadata 
-    await backup_channel_metadata(guild, subdir('conf'))
-    
     async with aiohttp.ClientSession() as session:
+        # Backup guild metadata
+        await backup_guild_metadata(guild, subdir('conf'))
+        
+        # Backup guild members (full list)
+        await backup_guild_members(session, guild, subdir('conf'))
+            
+        # Backup guild roles 
+        await backup_roles(guild, subdir('conf'))
+        
+        # Backup channel metadata 
+        await backup_channel_metadata(guild, subdir('conf'))
+    
         # Regular text channels (including announcement channels)
         await backup_text_channels(guild, subdir('channels/text'), attachments_dir, session)
         
