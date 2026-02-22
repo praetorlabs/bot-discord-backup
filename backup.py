@@ -42,8 +42,8 @@ client = discord.Client(intents=intents)
 
 async def download_file(session: aiohttp.ClientSession, url: str, path: Path) -> None:
     """Download a file asynchronously with a shared session for efficiency."""
-    logging.warning("skipped downloading file, stop skipping before running actual backup")
-    return
+    # logging.warning("skipped downloading file, stop skipping before running actual backup")
+    # return
     async with session.get(url) as resp:
         if resp.status == 200:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -366,8 +366,10 @@ def make_if_not_exist_dir(backup_dir, dir):
     new_dir.mkdir(parents=True, exist_ok=True)
     return new_dir
 
+
 @client.event
 async def on_ready():
+    
     logging.info('Logged in as %s — starting backup', client.user)
 
     guild = client.get_guild(GUILD_ID)
@@ -378,11 +380,11 @@ async def on_ready():
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     backup_dir = Path('backup') / f'{guild.name}_{timestamp}'
-    attachments_dir = backup_dir / 'attachments'
-    attachments_dir.mkdir(parents=True, exist_ok=True)
     
     def subdir(dir):
         return make_if_not_exist_dir(backup_dir=backup_dir, dir=dir)
+    
+    attachments_dir = subdir('attachments')
 
     async with aiohttp.ClientSession() as session:
         # Regular text channels (including announcement channels)
@@ -424,8 +426,7 @@ async def on_ready():
         
         # Backup all scheduled events (current and past, if available)
         logging.info('Backing up guild scheduled events...')
-        events_dir = backup_dir / 'scheduled_events'
-        events_dir.mkdir(exist_ok=True)
+        events_dir = subdir('scheduled_events')
 
         try:
             events = await guild.fetch_scheduled_events(with_counts=True)  # Fetches all, including interested user counts
@@ -466,14 +467,13 @@ async def on_ready():
                 async with aiofiles.open(event_file, 'w', encoding='utf-8') as f:
                     await f.write(json.dumps(event_data, ensure_ascii=False, indent=2))
 
-            logging.info(f'Backed up {len(events)} scheduled events to {events_dir}')
+            logging.info(f'Backed up {len(events)} scheduled events to {event_file}')
         except Exception as e:
             logging.exception('Error fetching scheduled events')
     
     # ── Backup guild roles ──
     logging.info('Backing up guild roles...')
-    roles_dir = backup_dir / 'conf'
-    roles_dir.mkdir(exist_ok=True)
+    roles_dir = subdir('conf')
 
     try:
         roles_list = []
@@ -504,8 +504,7 @@ async def on_ready():
 
     # ── Backup guild members (full list) ──
     logging.info('Backing up guild members...')
-    members_dir = backup_dir / 'conf'
-    members_dir.mkdir(exist_ok=True)
+    members_dir = subdir('conf')
 
     try:
         # Force full member list load for large guilds
