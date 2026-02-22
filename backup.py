@@ -355,6 +355,17 @@ async def backup_voice_channel(
     # Use backup_messagable on channel (it works for VoiceChannel text)
     await backup_messagable(channel, backup_dir, attachments_dir, session)
 
+def make_if_not_exist_dir(backup_dir, dir):
+    if isinstance(backup_dir, str):
+        backup_dir = Path(backup_dir)
+    if not isinstance(backup_dir, Path):
+        raise Exception("backup path is invalid")
+    if dir is None or dir == "":
+        raise Exception("backup subdirectory not specified")
+    new_dir = backup_dir / dir
+    new_dir.mkdir(parents=True, exist_ok=True)
+    return new_dir
+
 @client.event
 async def on_ready():
     logging.info('Logged in as %s — starting backup', client.user)
@@ -369,21 +380,24 @@ async def on_ready():
     backup_dir = Path('backup') / f'{guild.name}_{timestamp}'
     attachments_dir = backup_dir / 'attachments'
     attachments_dir.mkdir(parents=True, exist_ok=True)
+    
+    def subdir(dir):
+        return make_if_not_exist_dir(backup_dir=backup_dir, dir=dir)
 
     async with aiohttp.ClientSession() as session:
         # Regular text channels (including announcement channels)
         for channel in guild.text_channels:
-            await backup_messagable(channel, backup_dir, attachments_dir, session)       
+            await backup_messagable(channel, subdir('channels/text'), attachments_dir, session)       
             
         # Voice channels
         logging.info('Backing up voice channels...')
         for vc in guild.voice_channels:
-            await backup_voice_channel(vc, backup_dir, attachments_dir, session)
+            await backup_voice_channel(vc, subdir('channels/voice'), attachments_dir, session)
 
         # Active threads (covers threads from both text channels and forums)
         logging.info('Backing up active threads...')
         for thread in guild.threads:
-            await backup_messagable(thread, backup_dir, attachments_dir, session)
+            await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
 
         # Archived threads (public and private) — iterate over possible parents
         logging.info('Backing up archived threads...')
@@ -392,7 +406,7 @@ async def on_ready():
             # Public archived
             try:
                 async for thread in parent.archived_threads(limit=None):
-                    await backup_messagable(thread, backup_dir, attachments_dir, session)
+                    await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -401,7 +415,7 @@ async def on_ready():
             # Private archived
             try:
                 async for thread in parent.archived_threads(limit=None, private=True):
-                    await backup_messagable(thread, backup_dir, attachments_dir, session)
+                    await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
             except discord.Forbidden:
                 pass
             except Exception as e:
@@ -458,7 +472,7 @@ async def on_ready():
     
     # ── Backup guild roles ──
     logging.info('Backing up guild roles...')
-    roles_dir = backup_dir / 'roles'
+    roles_dir = backup_dir / 'conf'
     roles_dir.mkdir(exist_ok=True)
 
     try:
@@ -490,7 +504,7 @@ async def on_ready():
 
     # ── Backup guild members (full list) ──
     logging.info('Backing up guild members...')
-    members_dir = backup_dir / 'members'
+    members_dir = backup_dir / 'conf'
     members_dir.mkdir(exist_ok=True)
 
     try:
