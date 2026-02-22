@@ -366,114 +366,94 @@ def make_if_not_exist_dir(backup_dir, dir):
     new_dir.mkdir(parents=True, exist_ok=True)
     return new_dir
 
-
-@client.event
-async def on_ready():
-    
-    logging.info('Logged in as %s — starting backup', client.user)
-
-    guild = client.get_guild(GUILD_ID)
-    if not guild:
-        logging.error('Guild not found — check GUILD_ID')
-        await client.close()
-        return
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_dir = Path('backup') / f'{guild.name}_{timestamp}'
-    
-    def subdir(dir):
-        return make_if_not_exist_dir(backup_dir=backup_dir, dir=dir)
-    
-    attachments_dir = subdir('attachments')
-
-    async with aiohttp.ClientSession() as session:
-        # Regular text channels (including announcement channels)
-        for channel in guild.text_channels:
-            await backup_messagable(channel, subdir('channels/text'), attachments_dir, session)       
+async def backup_text_channels(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up text channels...')
+    for channel in guild.text_channels:
+        await backup_messagable(channel, backup_dir, attachments_dir, session)   
+    logging.info(f'Backed up {len(guild.text_channels)} text channels to {backup_dir}')    
             
-        # Voice channels
-        logging.info('Backing up voice channels...')
-        for vc in guild.voice_channels:
-            await backup_voice_channel(vc, subdir('channels/voice'), attachments_dir, session)
+async def backup_voice_channels(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up voice channels...')
+    for vc in guild.voice_channels:
+        await backup_voice_channel(vc, backup_dir, attachments_dir, session)
+    logging.info(f'Backed up {len(guild.voice_channels)} voice channels to {backup_dir}')
 
-        # Active threads (covers threads from both text channels and forums)
-        logging.info('Backing up active threads...')
-        for thread in guild.threads:
-            await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
+async def backup_active_threads(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up active threads...')
+    for thread in guild.threads:
+        await backup_messagable(thread, backup_dir, attachments_dir, session)
+    logging.info(f'Backed up {len(guild.threads)} active threads to {backup_dir}')
 
-        # Archived threads (public and private) — iterate over possible parents
-        logging.info('Backing up archived threads...')
-        parents = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.ForumChannel))]
-        for parent in parents:
-            # Public archived
-            try:
-                async for thread in parent.archived_threads(limit=None):
-                    await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
-            except discord.Forbidden:
-                pass
-            except Exception as e:
-                logging.warning('Error fetching public archived threads in %s: %s', parent.name, e)
-
-            # Private archived
-            try:
-                async for thread in parent.archived_threads(limit=None, private=True):
-                    await backup_messagable(thread, subdir('channels/threads'), attachments_dir, session)
-            except discord.Forbidden:
-                pass
-            except Exception as e:
-                logging.warning('Error fetching private archived threads in %s: %s', parent.name, e)
-
-        
-        # Backup all scheduled events (current and past, if available)
-        logging.info('Backing up guild scheduled events...')
-        events_dir = subdir('scheduled_events')
-
+async def backup_archived_threads(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up archived threads...')
+    parents = [c for c in guild.channels if isinstance(c, (discord.TextChannel, discord.ForumChannel))]
+    for parent in parents:
+        # Public archived
         try:
-            events = await guild.fetch_scheduled_events(with_counts=True)  # Fetches all, including interested user counts
-            for event in events:
-                event_data = {
-                    'id': event.id,
-                    'name': event.name,
-                    'description': event.description,
-                    'scheduled_start_time': event.start_time.isoformat() if event.start_time else None,
-                    'scheduled_end_time': event.end_time.isoformat() if event.end_time else None,
-                    'status': str(event.status),  # Scheduled, Active, Completed, Canceled
-                    'entity_type': str(event.entity_type),  # Voice, Stage, External
-                    'channel_id': event.channel_id,
-                    'creator_id': event.creator_id,
-                    'user_count': event.user_count,  # Interested users (if with_user_count=True)
-                    'privacy_level': str(event.privacy_level),
-                    'image': event.image_url if hasattr(event, 'image_url') else None,  # Cover image URL if set
-                    # Recurrence (if repeating event)
-                    'recurrence_rule': (
-                        {
-                            'frequency': str(event.recurrence_rule.freq) if event.recurrence_rule else None,
-                            'interval': event.recurrence_rule.interval if event.recurrence_rule else None,
-                            'by_weekday': [str(d) for d in event.recurrence_rule.by_weekday] if event.recurrence_rule and event.recurrence_rule.by_weekday else None,
-                            'by_month': event.recurrence_rule.by_month if event.recurrence_rule else None,
-                            'by_month_day': event.recurrence_rule.by_month_day if event.recurrence_rule else None,
-                            'end': event.recurrence_rule.end.isoformat() if event.recurrence_rule and event.recurrence_rule.end else None,
-                        }
-                        if hasattr(event, 'recurrence_rule') and event.recurrence_rule
-                        else None
-                    ),
-                    # Metadata for external events
-                    'entity_metadata': {
-                        'location': event.entity_metadata.location if event.entity_metadata else None,
-                    } if hasattr(event, 'entity_metadata') else None,
-                }
-
-                event_file = events_dir / f'event_{event.id}.json'
-                async with aiofiles.open(event_file, 'w', encoding='utf-8') as f:
-                    await f.write(json.dumps(event_data, ensure_ascii=False, indent=2))
-
-            logging.info(f'Backed up {len(events)} scheduled events to {event_file}')
+            async for thread in parent.archived_threads(limit=None):
+                await backup_messagable(thread, backup_dir, attachments_dir, session)
+        except discord.Forbidden:
+            pass
         except Exception as e:
-            logging.exception('Error fetching scheduled events')
-    
-    # ── Backup guild roles ──
+            logging.warning('Error fetching public archived threads in %s: %s', parent.name, e)
+
+        # Private archived
+        try:
+            async for thread in parent.archived_threads(limit=None, private=True):
+                await backup_messagable(thread, backup_dir, attachments_dir, session)
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logging.warning('Error fetching private archived threads in %s: %s', parent.name, e)
+            
+async def backup_scheduled_events(guild, backup_dir):
+    logging.info('Backing up guild scheduled events...')
+
+    try:
+        events = await guild.fetch_scheduled_events(with_counts=True)  # Fetches all, including interested user counts
+        for event in events:
+            event_data = {
+                'id': event.id,
+                'name': event.name,
+                'description': event.description,
+                'scheduled_start_time': event.start_time.isoformat() if event.start_time else None,
+                'scheduled_end_time': event.end_time.isoformat() if event.end_time else None,
+                'status': str(event.status),  # Scheduled, Active, Completed, Canceled
+                'entity_type': str(event.entity_type),  # Voice, Stage, External
+                'channel_id': event.channel_id,
+                'creator_id': event.creator_id,
+                'user_count': event.user_count,  # Interested users (if with_user_count=True)
+                'privacy_level': str(event.privacy_level),
+                'image': event.image_url if hasattr(event, 'image_url') else None,  # Cover image URL if set
+                # Recurrence (if repeating event)
+                'recurrence_rule': (
+                    {
+                        'frequency': str(event.recurrence_rule.freq) if event.recurrence_rule else None,
+                        'interval': event.recurrence_rule.interval if event.recurrence_rule else None,
+                        'by_weekday': [str(d) for d in event.recurrence_rule.by_weekday] if event.recurrence_rule and event.recurrence_rule.by_weekday else None,
+                        'by_month': event.recurrence_rule.by_month if event.recurrence_rule else None,
+                        'by_month_day': event.recurrence_rule.by_month_day if event.recurrence_rule else None,
+                        'end': event.recurrence_rule.end.isoformat() if event.recurrence_rule and event.recurrence_rule.end else None,
+                    }
+                    if hasattr(event, 'recurrence_rule') and event.recurrence_rule
+                    else None
+                ),
+                # Metadata for external events
+                'entity_metadata': {
+                    'location': event.entity_metadata.location if event.entity_metadata else None,
+                } if hasattr(event, 'entity_metadata') else None,
+            }
+
+            event_file = backup_dir / f'event_{event.id}.json'
+            async with aiofiles.open(event_file, 'w', encoding='utf-8') as f:
+                await f.write(json.dumps(event_data, ensure_ascii=False, indent=2))
+
+        logging.info(f'Backed up {len(events)} scheduled events to {backup_dir}')
+    except Exception as e:
+        logging.exception('Error fetching scheduled events')
+
+async def backup_roles(guild, backup_dir):
     logging.info('Backing up guild roles...')
-    roles_dir = subdir('conf')
 
     try:
         roles_list = []
@@ -492,7 +472,7 @@ async def on_ready():
             }
             roles_list.append(role_data)
 
-        roles_file = roles_dir / 'guild_roles.jsonl'
+        roles_file = backup_dir / 'guild_roles.jsonl'
         async with aiofiles.open(roles_file, 'w', encoding='utf-8') as f:
             for role_data in roles_list:
                 await f.write(json.dumps(role_data, ensure_ascii=False) + '\n')
@@ -501,10 +481,8 @@ async def on_ready():
     except Exception as e:
         logging.exception('Error backing up guild roles')
 
-
-    # ── Backup guild members (full list) ──
+async def backup_guild_members(guild, backup_dir):
     logging.info('Backing up guild members...')
-    members_dir = subdir('conf')
 
     try:
         # Force full member list load for large guilds
@@ -536,7 +514,7 @@ async def on_ready():
             members_list.append(member_data)
 
         if members_list:
-            members_file = members_dir / 'guild_members.jsonl'
+            members_file = backup_dir / 'guild_members.jsonl'
             async with aiofiles.open(members_file, 'w', encoding='utf-8') as f:
                 for member_data in members_list:
                     await f.write(json.dumps(member_data, ensure_ascii=False) + '\n')
@@ -550,7 +528,48 @@ async def on_ready():
         logging.warning(f'HTTP error during member chunk/fetch: {e}')
     except Exception as e:
         logging.exception('Unexpected error backing up guild members')
+    
+
+@client.event
+async def on_ready():
+    
+    logging.info('Logged in as %s — starting backup', client.user)
+
+    guild = client.get_guild(GUILD_ID)
+    if not guild:
+        logging.error('Guild not found — check GUILD_ID')
+        await client.close()
+        return
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_dir = Path('backup') / f'{guild.name}_{timestamp}'
+    
+    def subdir(dir):
+        return make_if_not_exist_dir(backup_dir=backup_dir, dir=dir)
+    
+    attachments_dir = subdir('attachments')
+
+    async with aiohttp.ClientSession() as session:
+        # Regular text channels (including announcement channels)
+        await backup_text_channels(guild, subdir('channels/text'), attachments_dir, session)
         
+        # Voice channels
+        await backup_voice_channels(guild, subdir('channels/voice'), attachments_dir, session)
+        
+        # Active threads (covers threads from both text channels and forums)
+        await backup_active_threads(guild, subdir('channels/threads'), attachments_dir, session)
+        
+        # Backup all archived threads
+        await backup_archived_threads(guild, subdir('channels/threads'), attachments_dir, session)
+        
+    # Backup all scheduled events (current and past, if available)
+    await backup_scheduled_events(guild, subdir('scheduled_events'))
+        
+    # Backup guild roles 
+    await backup_roles(guild, subdir('conf'))
+
+    # Backup guild members (full list)
+    await backup_guild_members(guild, subdir('conf'))
         
     logging.info('Full backup complete! Files saved to: %s', backup_dir)
     await client.close()
