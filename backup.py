@@ -172,6 +172,12 @@ def serialize_message(message: discord.Message) -> dict[str, Any]:
     }
 
 
+async def backup_channel_permissions(): # <-- grok give this method the appropriate arguments
+    '''
+    grok can you make this work
+    '''
+    pass
+
 async def backup_messagable(
     messagable: discord.abc.Messageable,
     backup_dir: Path,
@@ -185,12 +191,18 @@ async def backup_messagable(
     ):
         logging.warning('Skipping #%s (insufficient permissions)', messagable.name)
         return
-
+    
     safe_name = sanitize_filename(getattr(messagable, 'name', 'unknown'))
     channel_file = backup_dir / f'{messagable.id}-{safe_name}_messages.jsonl'
+    permissions_file = backup_dir / f'{messagable.id}-{safe_name}_permissions.jsonl'
 
     logging.info('Backing up #%s (ID: %s)', messagable.name, messagable.id)
+    
+    
+    # Backup members and permissions for users belonging to this channel
+    await backup_channel_permissions() # <-- grok pass appropriate arguments to this method
 
+    # Backup messages
     count = 0
     media_id = 0
 
@@ -316,6 +328,127 @@ async def backup_messagable(
     except Exception as e:
         logging.exception('Error backing up #%s', messagable.name)
 
+async def backup_guild_metadata(guild: discord.Guild, backup_dir: Path) -> None:
+    logging.info('Backing up guild metadata...')
+    try:
+        guild_data = {
+            'id': guild.id,
+            'name': guild.name,
+            'description': guild.description,
+            'owner_id': guild.owner_id,
+            'member_count': guild.member_count,
+            'max_members': guild.max_members,
+            'max_presences': guild.max_presences,
+            'max_video_channel_users': guild.max_video_channel_users,
+            'verification_level': str(guild.verification_level),
+            'explicit_content_filter': str(guild.explicit_content_filter),
+            'mfa_level': str(guild.mfa_level),
+            'nsfw_level': str(guild.nsfw_level),
+            'premium_tier': guild.premium_tier,
+            'premium_subscription_count': guild.premium_subscription_count,
+            'preferred_locale': str(guild.preferred_locale),
+            'features': guild.features,
+            'icon_url': str(guild.icon) if guild.icon else None,
+            'banner_url': str(guild.banner) if guild.banner else None,
+            'vanity_url_code': guild.vanity_url_code,
+            'created_at': guild.created_at.isoformat() if guild.created_at else None,
+            'premium_progress_bar_enabled': guild.premium_progress_bar_enabled,
+        }
+        metadata_file = backup_dir / 'guild_metadata.json'
+        async with aiofiles.open(metadata_file, 'w', encoding='utf-8') as f:
+            await f.write(json.dumps(guild_data, ensure_ascii=False, indent=2))
+        logging.info(f'Backed up guild metadata to {metadata_file}')
+    except Exception as e:
+        logging.exception('Error backing up guild metadata')
+
+async def backup_guild_members(guild, backup_dir):
+    logging.info('Backing up guild members...')
+
+    try:
+        # Force full member list load for large guilds
+        if guild.large or len(guild.members) < guild.member_count - 50:
+            logging.info('Guild is large or cache incomplete — chunking members...')
+            await guild.chunk()  # Triggers Discord to send all members via gateway
+            # Wait a bit for chunks to arrive (adjust as needed)
+            await asyncio.sleep(5)  # Give time; may need more for huge guilds
+
+        members_list = []
+        for member in guild.members:
+            member_data = {
+                'id': member.id,
+                'name': member.name,
+                'global_name': member.global_name,
+                'display_name': member.display_name,
+                'discriminator': member.discriminator if hasattr(member, 'discriminator') else None,
+                'joined_at': member.joined_at.isoformat() if member.joined_at else None,
+                'created_at': member.created_at.isoformat() if member.created_at else None,
+                'bot': member.bot,
+                'premium_since': member.premium_since.isoformat() if member.premium_since else None,
+                'roles': [role.id for role in member.roles],
+                'top_role_id': member.top_role.id if member.top_role else None,
+                'status': str(member.status),
+                'flags': member.public_flags.value if member.public_flags else None,
+                'communication_disabled_until': member.communication_disabled_until.isoformat() if getattr(member, 'communication_disabled_until', None) is not None else None,
+                'avatar_url': member.avatar.url if member.avatar else None,
+            }
+            members_list.append(member_data)
+
+        if members_list:
+            members_file = backup_dir / 'guild_members.jsonl'
+            async with aiofiles.open(members_file, 'w', encoding='utf-8') as f:
+                for member_data in members_list:
+                    await f.write(json.dumps(member_data, ensure_ascii=False) + '\n')
+            logging.info(f'Backed up {len(members_list)} members to {members_file}')
+        else:
+            logging.warning('No members loaded — ensure Members Intent is enabled in portal and code')
+
+    except discord.Forbidden:
+        logging.warning('Cannot fetch members (Members Intent or permissions missing)')
+    except discord.HTTPException as e:
+        logging.warning(f'HTTP error during member chunk/fetch: {e}')
+    except Exception as e:
+        logging.exception('Unexpected error backing up guild members')
+    
+async def backup_roles(guild, backup_dir):
+    logging.info('Backing up guild roles...')
+
+    try:
+        roles_list = []
+        for role in guild.roles:
+            role_data = {
+                'id': role.id,
+                'name': role.name,
+                'color': role.color.value,
+                'hoist': role.hoist,
+                'position': role.position,
+                'permissions': serialize_permissions(role.permissions.value),  # ← now uses helper with raw + granted
+                'mentionable': role.mentionable,
+                'managed': role.managed,
+                'is_default': role.is_default(),
+                'created_at': role.created_at.isoformat() if role.created_at else None,
+            }
+            roles_list.append(role_data)
+
+        roles_file = backup_dir / 'guild_roles.jsonl'
+        async with aiofiles.open(roles_file, 'w', encoding='utf-8') as f:
+            for role_data in roles_list:
+                await f.write(json.dumps(role_data, ensure_ascii=False) + '\n')
+        logging.info(f'Backed up {len(roles_list)} roles to {roles_file}')
+
+    except Exception as e:
+        logging.exception('Error backing up guild roles')
+
+async def backup_channel_metadata(): # <-- grok give this method the appropriate arguments
+    '''
+    grok can you make this work
+    '''
+    pass
+
+async def backup_text_channels(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up text channels...')
+    for channel in guild.text_channels:
+        await backup_messagable(channel, backup_dir, attachments_dir, session)
+    logging.info(f'Backed up {len(guild.text_channels)} text channels to {backup_dir}')    
 
 async def backup_voice_channel(
     channel: discord.VoiceChannel,
@@ -354,29 +487,6 @@ async def backup_voice_channel(
     # Associated text chat (voice channels have text component)
     # Use backup_messagable on channel (it works for VoiceChannel text)
     await backup_messagable(channel, backup_dir, attachments_dir, session)
-
-def make_if_not_exist_dir(backup_dir, dir):
-    if isinstance(backup_dir, str):
-        backup_dir = Path(backup_dir)
-    if not isinstance(backup_dir, Path):
-        raise Exception("backup path is invalid")
-    if dir is None or dir == "":
-        raise Exception("backup subdirectory not specified")
-    new_dir = backup_dir / dir
-    new_dir.mkdir(parents=True, exist_ok=True)
-    return new_dir
-
-async def backup_text_channels(guild, backup_dir, attachments_dir, session):
-    logging.info('Backing up text channels...')
-    for channel in guild.text_channels:
-        await backup_messagable(channel, backup_dir, attachments_dir, session)   
-    logging.info(f'Backed up {len(guild.text_channels)} text channels to {backup_dir}')    
-            
-async def backup_voice_channels(guild, backup_dir, attachments_dir, session):
-    logging.info('Backing up voice channels...')
-    for vc in guild.voice_channels:
-        await backup_voice_channel(vc, backup_dir, attachments_dir, session)
-    logging.info(f'Backed up {len(guild.voice_channels)} voice channels to {backup_dir}')
 
 async def backup_active_threads(guild, backup_dir, attachments_dir, session):
     logging.info('Backing up active threads...')
@@ -452,83 +562,23 @@ async def backup_scheduled_events(guild, backup_dir):
     except Exception as e:
         logging.exception('Error fetching scheduled events')
 
-async def backup_roles(guild, backup_dir):
-    logging.info('Backing up guild roles...')
+def make_if_not_exist_dir(backup_dir, dir):
+    if isinstance(backup_dir, str):
+        backup_dir = Path(backup_dir)
+    if not isinstance(backup_dir, Path):
+        raise Exception("backup path is invalid")
+    if dir is None or dir == "":
+        raise Exception("backup subdirectory not specified")
+    new_dir = backup_dir / dir
+    new_dir.mkdir(parents=True, exist_ok=True)
+    return new_dir
 
-    try:
-        roles_list = []
-        for role in guild.roles:
-            role_data = {
-                'id': role.id,
-                'name': role.name,
-                'color': role.color.value,
-                'hoist': role.hoist,
-                'position': role.position,
-                'permissions': serialize_permissions(role.permissions.value),  # ← now uses helper with raw + granted
-                'mentionable': role.mentionable,
-                'managed': role.managed,
-                'is_default': role.is_default(),
-                'created_at': role.created_at.isoformat() if role.created_at else None,
-            }
-            roles_list.append(role_data)
+async def backup_voice_channels(guild, backup_dir, attachments_dir, session):
+    logging.info('Backing up voice channels...')
+    for vc in guild.voice_channels:
+        await backup_voice_channel(vc, backup_dir, attachments_dir, session)
+    logging.info(f'Backed up {len(guild.voice_channels)} voice channels to {backup_dir}')
 
-        roles_file = backup_dir / 'guild_roles.jsonl'
-        async with aiofiles.open(roles_file, 'w', encoding='utf-8') as f:
-            for role_data in roles_list:
-                await f.write(json.dumps(role_data, ensure_ascii=False) + '\n')
-        logging.info(f'Backed up {len(roles_list)} roles to {roles_file}')
-
-    except Exception as e:
-        logging.exception('Error backing up guild roles')
-
-async def backup_guild_members(guild, backup_dir):
-    logging.info('Backing up guild members...')
-
-    try:
-        # Force full member list load for large guilds
-        if guild.large or len(guild.members) < guild.member_count - 50:
-            logging.info('Guild is large or cache incomplete — chunking members...')
-            await guild.chunk()  # Triggers Discord to send all members via gateway
-            # Wait a bit for chunks to arrive (adjust as needed)
-            await asyncio.sleep(5)  # Give time; may need more for huge guilds
-
-        members_list = []
-        for member in guild.members:
-            member_data = {
-                'id': member.id,
-                'name': member.name,
-                'global_name': member.global_name,
-                'display_name': member.display_name,
-                'discriminator': member.discriminator if hasattr(member, 'discriminator') else None,
-                'joined_at': member.joined_at.isoformat() if member.joined_at else None,
-                'created_at': member.created_at.isoformat() if member.created_at else None,
-                'bot': member.bot,
-                'premium_since': member.premium_since.isoformat() if member.premium_since else None,
-                'roles': [role.id for role in member.roles],
-                'top_role_id': member.top_role.id if member.top_role else None,
-                'status': str(member.status),
-                'flags': member.public_flags.value if member.public_flags else None,
-                'communication_disabled_until': member.communication_disabled_until.isoformat() if getattr(member, 'communication_disabled_until', None) is not None else None,
-                'avatar_url': member.avatar.url if member.avatar else None,
-            }
-            members_list.append(member_data)
-
-        if members_list:
-            members_file = backup_dir / 'guild_members.jsonl'
-            async with aiofiles.open(members_file, 'w', encoding='utf-8') as f:
-                for member_data in members_list:
-                    await f.write(json.dumps(member_data, ensure_ascii=False) + '\n')
-            logging.info(f'Backed up {len(members_list)} members to {members_file}')
-        else:
-            logging.warning('No members loaded — ensure Members Intent is enabled in portal and code')
-
-    except discord.Forbidden:
-        logging.warning('Cannot fetch members (Members Intent or permissions missing)')
-    except discord.HTTPException as e:
-        logging.warning(f'HTTP error during member chunk/fetch: {e}')
-    except Exception as e:
-        logging.exception('Unexpected error backing up guild members')
-    
 
 @client.event
 async def on_ready():
@@ -548,7 +598,19 @@ async def on_ready():
         return make_if_not_exist_dir(backup_dir=backup_dir, dir=dir)
     
     attachments_dir = subdir('attachments')
-
+    
+    # Backup guild metadata
+    await backup_guild_metadata(guild, subdir('conf'))
+    
+    # Backup guild members (full list)
+    await backup_guild_members(guild, subdir('conf'))
+        
+    # Backup guild roles 
+    await backup_roles(guild, subdir('conf'))
+    
+    # Backup channel metadata 
+    await backup_channel_metadata() # <-- grok pass appropriate arguments to this method
+    
     async with aiohttp.ClientSession() as session:
         # Regular text channels (including announcement channels)
         await backup_text_channels(guild, subdir('channels/text'), attachments_dir, session)
@@ -564,12 +626,6 @@ async def on_ready():
         
     # Backup all scheduled events (current and past, if available)
     await backup_scheduled_events(guild, subdir('scheduled_events'))
-        
-    # Backup guild roles 
-    await backup_roles(guild, subdir('conf'))
-
-    # Backup guild members (full list)
-    await backup_guild_members(guild, subdir('conf'))
         
     logging.info('Full backup complete! Files saved to: %s', backup_dir)
     await client.close()
